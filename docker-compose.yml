@@ -1,0 +1,12 @@
+services:
+  reddit-notifier:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - notifier-data:/data
+
+volumes:
+  notifier-data:

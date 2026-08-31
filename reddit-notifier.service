@@ -1,0 +1,18 @@
+# Example systemd unit. Copy to /etc/systemd/system/, adjust the paths and user,
+# then: systemctl daemon-reload && systemctl enable --now reddit-notifier
+[Unit]
+Description=Discord Reddit notifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reddit-notifier
+WorkingDirectory=/opt/reddit-notifications
+EnvironmentFile=/opt/reddit-notifications/.env
+ExecStart=/opt/reddit-notifications/.venv/bin/python -u main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
