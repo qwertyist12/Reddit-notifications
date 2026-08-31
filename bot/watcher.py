@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -20,6 +21,21 @@ DeliverFn = Callable[[Watch, dict[str, Any]], Awaitable[None]]
 
 # Consecutive-failure backoff, in seconds.
 BACKOFF_STEPS = (5, 15, 30, 60, 120, 300)
+
+# Reddit's OAuth budget, averaged over a 10-minute window.
+REDDIT_REQUESTS_PER_MINUTE = 100
+# Warn once we are using this much of it, while there is still headroom.
+BUDGET_WARN_FRACTION = 0.8
+
+
+def estimated_requests_per_minute(
+    subreddit_count: int, poll_interval: int, batch_size: int
+) -> float:
+    """How much of Reddit's rate budget the current settings will consume."""
+    if subreddit_count <= 0:
+        return 0.0
+    batches = math.ceil(subreddit_count / max(batch_size, 1))
+    return batches * (60 / max(poll_interval, 1))
 
 
 @dataclass
@@ -53,6 +69,7 @@ class Watcher:
         self._deliver = deliver
         self.stats = Stats()
         self._wake = asyncio.Event()
+        self._budget_warned = False
         # Posts created before this are treated as backlog and never announced.
         self._floor = time.time() - config.max_post_age
 
@@ -109,6 +126,8 @@ class Watcher:
         if not subreddits:
             return
 
+        self._check_rate_budget(len(subreddits))
+
         started = time.monotonic()
         batch_size = self._config.subreddits_per_request
         batches = [
@@ -123,6 +142,26 @@ class Watcher:
         self.stats.last_poll_at = time.time()
         self.stats.last_poll_duration = time.monotonic() - started
         await self._store.flush_seen()
+
+    def _check_rate_budget(self, subreddit_count: int) -> None:
+        """Warn if the interval and subreddit count together outrun Reddit's budget."""
+        rate = estimated_requests_per_minute(
+            subreddit_count,
+            self._config.poll_interval,
+            self._config.subreddits_per_request,
+        )
+        over = rate > REDDIT_REQUESTS_PER_MINUTE * BUDGET_WARN_FRACTION
+        if over and not self._budget_warned:
+            log.warning(
+                "%d subreddits every %ds needs ~%.0f requests/min, near Reddit's "
+                "limit of %d. Raise POLL_INTERVAL or SUBREDDITS_PER_REQUEST if you "
+                "start seeing rate-limit errors.",
+                subreddit_count,
+                self._config.poll_interval,
+                rate,
+                REDDIT_REQUESTS_PER_MINUTE,
+            )
+        self._budget_warned = over
 
     async def _handle_posts(self, batch: list[str], posts: list[dict[str, Any]]) -> None:
         # Group by subreddit so a first-time subreddit can be seeded on its own.

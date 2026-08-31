@@ -6,7 +6,11 @@ from pathlib import Path
 from bot.config import Config
 from bot.reddit import RedditError
 from bot.store import Store, Watch
-from bot.watcher import Watcher
+from bot.watcher import (
+    REDDIT_REQUESTS_PER_MINUTE,
+    Watcher,
+    estimated_requests_per_minute,
+)
 
 
 def make_config(tmp: Path, **overrides) -> Config:
@@ -222,6 +226,89 @@ class WatcherTests(unittest.IsolatedAsyncioTestCase):
         _, reddit, watcher = await self.build([[]], [])
         await watcher._poll_once()
         self.assertEqual(reddit.calls, [])
+
+
+class RateBudgetTests(unittest.TestCase):
+    def test_one_batch_at_five_seconds_is_twelve_requests_a_minute(self):
+        self.assertEqual(estimated_requests_per_minute(25, 5, 25), 12)
+
+    def test_the_default_settings_stay_well_inside_reddits_budget(self):
+        # 25 subreddits on the shipped defaults: one batch, 12 req/min of 100.
+        rate = estimated_requests_per_minute(25, 5, 25)
+        self.assertLess(rate, REDDIT_REQUESTS_PER_MINUTE * 0.8)
+
+    def test_a_partial_batch_still_costs_a_whole_request(self):
+        self.assertEqual(estimated_requests_per_minute(26, 5, 25), 24)
+
+    def test_no_subreddits_costs_nothing(self):
+        self.assertEqual(estimated_requests_per_minute(0, 5, 25), 0.0)
+
+    def test_many_subreddits_at_the_floor_exceeds_the_budget(self):
+        # 200 subreddits = 8 batches = 96 req/min, over the 80% warning line.
+        self.assertGreater(
+            estimated_requests_per_minute(200, 5, 25), REDDIT_REQUESTS_PER_MINUTE * 0.8
+        )
+
+    def test_a_longer_interval_brings_it_back_under(self):
+        self.assertLess(
+            estimated_requests_per_minute(200, 15, 25), REDDIT_REQUESTS_PER_MINUTE * 0.8
+        )
+
+
+class BudgetWarningTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    async def watcher_with(self, subreddit_count, **config_overrides):
+        store = Store(self.dir)
+        store.load()
+        for i in range(subreddit_count):
+            await store.add_watch(
+                Watch.create(
+                    subreddit=f"sub{i}",
+                    channel_id=1,
+                    dm_user_id=None,
+                    mention=None,
+                    created_by=1,
+                    guild_id=1,
+                )
+            )
+
+        async def deliver(watch, item):
+            pass
+
+        config = make_config(self.dir, **config_overrides)
+        return Watcher(config, store, FakeReddit([]), deliver)
+
+    async def test_no_warning_at_the_default_scale(self):
+        watcher = await self.watcher_with(10, poll_interval=5)
+        with self.assertNoLogs("bot.watcher", level="WARNING"):
+            watcher._check_rate_budget(10)
+
+    async def test_warns_when_the_budget_is_nearly_spent(self):
+        watcher = await self.watcher_with(0, poll_interval=5)
+        with self.assertLogs("bot.watcher", level="WARNING") as logs:
+            watcher._check_rate_budget(200)
+        self.assertIn("Reddit", logs.output[0])
+
+    async def test_the_warning_is_not_repeated_every_poll(self):
+        watcher = await self.watcher_with(0, poll_interval=5)
+        with self.assertLogs("bot.watcher", level="WARNING"):
+            watcher._check_rate_budget(200)
+        with self.assertNoLogs("bot.watcher", level="WARNING"):
+            watcher._check_rate_budget(200)
+
+    async def test_the_warning_can_fire_again_after_recovering(self):
+        watcher = await self.watcher_with(0, poll_interval=5)
+        with self.assertLogs("bot.watcher", level="WARNING"):
+            watcher._check_rate_budget(200)
+        watcher._check_rate_budget(10)  # back under the line
+        with self.assertLogs("bot.watcher", level="WARNING"):
+            watcher._check_rate_budget(200)
 
 
 if __name__ == "__main__":

@@ -109,7 +109,7 @@ class Config:
             reddit_username=os.getenv("REDDIT_USERNAME", "").strip() or None,
             reddit_password=os.getenv("REDDIT_PASSWORD", "").strip() or None,
             reddit_user_agent=user_agent,
-            poll_interval=_int_env("POLL_INTERVAL", 15, minimum=5),
+            poll_interval=_int_env("POLL_INTERVAL", 5, minimum=5),
             subreddits_per_request=_int_env("SUBREDDITS_PER_REQUEST", 25, minimum=1),
             max_post_age=_int_env("MAX_POST_AGE", 3600, minimum=0),
             data_dir=Path(os.getenv("DATA_DIR", "data").strip() or "data"),

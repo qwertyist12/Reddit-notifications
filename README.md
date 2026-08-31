@@ -6,16 +6,30 @@ author, and get an embed with a mention in the channel or your DMs.
 
 ## How fast is it?
 
-The bot polls Reddit's `/new` listing on a fixed interval (**15 seconds** by
-default, configurable down to 5). The trick that keeps that affordable is that
-Reddit lets you read several subreddits in one request — `/r/python+rust+go/new`
-— so the bot batches up to 25 subreddits per call. Watching 25 subreddits costs
-4 requests per minute out of an OAuth budget of 100, so you can watch a lot of
-subreddits and still poll fast.
+The bot polls Reddit's `/new` listing every **5 seconds** by default. The trick
+that keeps that affordable is that Reddit lets you read several subreddits in
+one request — `/r/python+rust+go/new` — so the bot batches up to 25 subreddits
+per call. Any number of subreddits up to 25 costs the same 12 requests per
+minute, out of an OAuth budget of 100.
 
-Typical end-to-end lag is *poll interval / 2 + a second or two*, so around
-8 seconds at the default setting. `/status` reports the measured lag for the
-most recent post.
+Typical end-to-end lag is *poll interval / 2 + a second or two*, so **3–4
+seconds**. `/status` reports the measured lag for the most recent post.
+
+Five seconds is the floor the config accepts. Going lower buys very little —
+you would be spending quota to shave a second or two — and risks tripping
+Reddit's rate limiting.
+
+How far the default scales, since each batch of 25 costs 12 requests/min:
+
+| Subreddits watched | Requests/min at 5s | Budget used |
+| --- | --- | --- |
+| up to 25 | 12 | 12% |
+| 50 | 24 | 24% |
+| 100 | 48 | 48% |
+| 200 | 96 | 96% — too close |
+
+The bot logs a warning once you cross 80% of the budget, naming the two knobs
+that fix it. Past roughly 150 subreddits, raise `POLL_INTERVAL`.
 
 Reddit has no push/webhook API for new posts, so polling is the only option; the
 batching above is what makes a short interval practical.
@@ -91,7 +105,7 @@ to ping someone else or a role.
 | `REDDIT_USERNAME` / `REDDIT_PASSWORD` | unset | Optional. Set both to authenticate as a Reddit account instead of app-only |
 | `REDDIT_USER_AGENT` | generic | Reddit asks that you identify your client here |
 | `DISCORD_GUILD_IDS` | unset | Comma-separated guild ids for instant command sync |
-| `POLL_INTERVAL` | `15` | Seconds between polls (minimum 5) |
+| `POLL_INTERVAL` | `5` | Seconds between polls (5 is the minimum) |
 | `SUBREDDITS_PER_REQUEST` | `25` | Subreddits batched into one Reddit call |
 | `MAX_POST_AGE` | `3600` | Posts older than this are never announced |
 | `DATA_DIR` | `data` | Where `watches.json` and `seen.json` are written |
@@ -102,8 +116,9 @@ to ping someone else or a role.
 Each batched request returns at most 100 posts *in total across the batch*. If
 the subreddits in one batch collectively produce more than 100 posts within a
 single poll interval, the bot can miss some — it logs a warning when it sees a
-full page of unseen posts. If that happens, lower `SUBREDDITS_PER_REQUEST` (so
-busy subreddits get their own request) or shorten `POLL_INTERVAL`.
+full page of unseen posts. If that happens, lower `SUBREDDITS_PER_REQUEST` so
+busy subreddits get their own request. (`POLL_INTERVAL` is already at its floor
+by default, so shortening it is not an option unless you have raised it.)
 
 ## Behaviour worth knowing
 
@@ -139,7 +154,8 @@ made during the gap are missed).
 .venv/bin/python -m unittest discover -s tests -t .
 ```
 
-59 tests cover the store and its filters, the dedupe/seeding/batching logic in
-the poll loop, embed rendering, and the Reddit OAuth and request paths — the
-last of these run against a local stand-in server, so the suite needs no
-credentials and no network access.
+77 tests cover configuration, the store and its filters, the
+dedupe/seeding/batching and rate-budget logic in the poll loop, embed
+rendering, and the Reddit OAuth and request paths — the last of these run
+against a local stand-in server, so the suite needs no credentials and no
+network access.
